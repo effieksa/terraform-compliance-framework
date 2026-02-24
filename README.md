@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/effieksa/terraform-compliance-framework/actions/workflows/terraform-ci.yml/badge.svg)](https://github.com/effieksa/terraform-compliance-framework/actions)
 
-A production-grade, modular Terraform framework for Fortune 500 enterprises that enforces security compliance, cost governance, and operational best practices as code. Built with **SOC 2**, **PCI-DSS**, **HIPAA**, and **NIST 800-53** control mappings baked directly into the infrastructure modules.
+A production grade, modular Terraform framework for enterprises that enforces security compliance, cost governance, and operational best practices as code. Built with **SOC 2**, **PCI-DSS**, **HIPAA**, and **NIST 800-53** control mappings baked directly into the infrastructure modules.
 
 ---
 
@@ -31,13 +31,13 @@ A production-grade, modular Terraform framework for Fortune 500 enterprises that
 
 ## Overview
 
-This framework addresses a critical enterprise challenge: teams provision AWS infrastructure inconsistently, creating security gaps, compliance violations, and cost overruns. By providing **pre-approved, compliance-validated Terraform modules**, this platform allows developers to self-serve infrastructure while guaranteeing security guardrails are enforced automatically — not manually reviewed.
+This framework addresses a critical enterprise challenge: teams provision AWS infrastructure inconsistently, creating security gaps, compliance violations, and cost overruns. By providing **pre approved, compliance validated Terraform modules**, this platform allows developers to self serve infrastructure while guaranteeing security guardrails are enforced automatically not manually reviewed.
 
 **Key outcomes this framework delivers:**
 - Reduce infrastructure provisioning from weeks to hours
 - Eliminate 90%+ of configuration drift incidents
 - Pass SOC 2 / PCI-DSS audits without manual evidence collection
-- Block non-compliant deployments before they reach production
+- Block non compliant deployments before they reach production
 - Enforce cost tagging and budget guardrails across all accounts
 
 ---
@@ -95,27 +95,27 @@ This framework addresses a critical enterprise challenge: teams provision AWS in
 
 ### Security & Compliance
 - **Encryption at rest and in transit** enforced on all storage and database modules
-- **Least-privilege IAM** with permission boundaries and automated policy generation
+- **Least privilege IAM** with permission boundaries and automated policy generation
 - **VPC flow logs** enabled by default with centralized log aggregation
-- **AWS Security Hub**, **GuardDuty**, and **CloudTrail** deployed via security-baseline module
+- **AWS Security Hub**, **GuardDuty**, and **CloudTrail** deployed via security baseline module
 - **KMS customer-managed keys (CMK)** for EKS secrets, RDS, and S3 encryption
 
 ### Compliance Guardrails
 - **OPA/Rego policies** enforce mandatory resource tagging before any apply
-- **tfsec** and **checkov** integrated in CI/CD to block non-compliant PRs
+- **tfsec** and **checkov** integrated in CI/CD to block non compliant PRs
 - **CIS AWS Benchmark** controls mapped to each module variable
 - **Drift detection** via automated Terraform plan runs with PagerDuty alerting
 
 ### Operational Excellence
-- **Modular design** — each module is independently versioned and tested
-- **Remote state** with S3 backend, DynamoDB locking, and cross-account state sharing
-- **Multi-environment** — dev/staging/prod with environment-specific variable overrides
+- **Modular design** each module is independently versioned and tested
+- **Remote state** with S3 backend, DynamoDB locking, and cross account state sharing
+- **Multi environment** dev/staging/prod with environment specific variable overrides
 - **Terratest** Go tests validate module behavior before merging
 
 ### Cost Governance
 - Mandatory `CostCenter` and `Owner` tags enforced by OPA policy
 - AWS Budget alerts provisioned alongside workload infrastructure
-- Right-sized instance recommendations built into module variable defaults
+- Right sized instance recommendations built into module variable defaults
 
 ---
 
@@ -123,10 +123,10 @@ This framework addresses a critical enterprise challenge: teams provision AWS in
 
 | Module | Description | Compliance Controls |
 |---|---|---|
-| `modules/vpc` | Multi-AZ VPC with public/private/intra subnets, NAT gateway, VPC flow logs | CIS 3.9, NIST AC-4, PCI 1.3 |
+| `modules/vpc` | Multi AZ VPC with public/private/intra subnets, NAT gateway, VPC flow logs | CIS 3.9, NIST AC-4, PCI 1.3 |
 | `modules/eks` | EKS cluster with managed node groups, IRSA, secrets encryption, audit logs | CIS 5.1, NIST SI-2, SOC2 CC6 |
-| `modules/rds` | Aurora PostgreSQL multi-AZ, automated backups, CMK encryption, no public access | PCI 3.4, HIPAA 164.312, SOC2 CC6 |
-| `modules/iam` | IAM roles with permission boundaries, least-privilege policies, MFA enforcement | NIST AC-2, CIS 1.x, SOC2 CC6 |
+| `modules/rds` | Aurora PostgreSQL multi AZ, automated backups, CMK encryption, no public access | PCI 3.4, HIPAA 164.312, SOC2 CC6 |
+| `modules/iam` | IAM roles with permission boundaries, least privilege policies, MFA enforcement | NIST AC-2, CIS 1.x, SOC2 CC6 |
 | `modules/s3` | S3 buckets with versioning, encryption, public access block, access logging | CIS 2.1, PCI 3.4, NIST SC-28 |
 | `modules/security-baseline` | GuardDuty, Security Hub, CloudTrail, Config rules, SNS alerting | CIS 2.x/3.x, NIST AU-2, SOC2 CC7 |
 
