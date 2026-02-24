@@ -1,0 +1,354 @@
+name: Terraform CI — Compliance Gate
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "modules/**"
+      - "environments/**"
+      - "policies/**"
+      - ".github/workflows/**"
+  push:
+    branches: [main]
+    paths:
+      - "environments/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write  # Required for OIDC auth to AWS
+
+env:
+  TF_VERSION: "1.6.4"
+  TFSEC_VERSION: "v1.28.4"
+  CHECKOV_VERSION: "3.2.0"
+  OPA_VERSION: "v0.60.0"
+
+jobs:
+  # ─── Stage 1: Code Quality ────────────────────────────────────────────────
+  terraform-validate:
+    name: "Format & Validate"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        working_dir: [modules/vpc, modules/eks, modules/rds, modules/s3, modules/iam, modules/security-baseline]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        working-directory: ${{ matrix.working_dir }}
+        run: |
+          terraform fmt -check -recursive -diff
+          echo "fmt_outcome=$?" >> $GITHUB_OUTPUT
+
+      - name: Terraform Init
+        working-directory: ${{ matrix.working_dir }}
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        id: validate
+        working-directory: ${{ matrix.working_dir }}
+        run: terraform validate -no-color
+
+      - name: Post format/validate status to PR
+        if: github.event_name == 'pull_request' && (failure() || steps.fmt.outputs.fmt_outcome != '0')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `### Terraform Validation — \`${{ matrix.working_dir }}\`
+            | Check | Status |
+            |-------|--------|
+            | Format | ${{ steps.fmt.outcome == 'success' && '✅ Pass' || '❌ Fail — run `terraform fmt`' }} |
+            | Validate | ${{ steps.validate.outcome == 'success' && '✅ Pass' || '❌ Fail' }} |
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+  # ─── Stage 2: Security Scanning ───────────────────────────────────────────
+  tfsec-scan:
+    name: "tfsec — CIS Security Scan"
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          version: ${{ env.TFSEC_VERSION }}
+          working_directory: "."
+          minimum_severity: HIGH
+          format: sarif
+          soft_fail: false
+          additional_args: >
+            --exclude-downloaded-modules
+            --config-file .tfsec.yml
+
+      - name: Upload SARIF results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+          category: tfsec
+
+      - name: Generate tfsec HTML report
+        if: always()
+        run: |
+          docker run --rm -v $(pwd):/src \
+            aquasec/tfsec:${{ env.TFSEC_VERSION }} \
+            /src --format html --out /src/reports/tfsec-report.html \
+            --minimum-severity MEDIUM
+
+      - name: Upload tfsec report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tfsec-report
+          path: reports/tfsec-report.html
+          retention-days: 30
+
+  checkov-scan:
+    name: "checkov — Policy Compliance Scan"
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install checkov
+        run: pip install checkov==${{ env.CHECKOV_VERSION }}
+
+      - name: Run checkov
+        id: checkov
+        run: |
+          mkdir -p reports
+          checkov -d . \
+            --framework terraform \
+            --output cli \
+            --output json \
+            --output-file-path reports/ \
+            --download-external-modules false \
+            --compact \
+            --soft-fail-on MEDIUM \
+            --hard-fail-on HIGH,CRITICAL \
+            2>&1 | tee reports/checkov-output.txt
+
+      - name: Upload checkov report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checkov-report
+          path: reports/
+          retention-days: 30
+
+      - name: Post checkov summary to PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let summary = 'checkov scan complete. See artifacts for full report.';
+            try {
+              const results = JSON.parse(fs.readFileSync('reports/results_json.json', 'utf8'));
+              const passed = results.summary?.passed || 0;
+              const failed = results.summary?.failed || 0;
+              summary = `### checkov Policy Scan Results
+              | Metric | Count |
+              |--------|-------|
+              | ✅ Passed | ${passed} |
+              | ❌ Failed | ${failed} |
+              
+              ${failed > 0 ? '⚠️ Fix HIGH/CRITICAL findings before merging.' : '✅ All policy checks passed.'}
+              `;
+            } catch (e) {}
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+  # ─── Stage 3: OPA Policy Evaluation ──────────────────────────────────────
+  opa-policy-check:
+    name: "OPA — Enterprise Policy Evaluation"
+    runs-on: ubuntu-latest
+    needs: [tfsec-scan, checkov-scan]
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Install OPA
+        run: |
+          curl -L -o /usr/local/bin/opa \
+            "https://github.com/open-policy-agent/opa/releases/download/${{ env.OPA_VERSION }}/opa_linux_amd64_static"
+          chmod +x /usr/local/bin/opa
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Terraform Plan (dev environment)
+        working-directory: environments/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+          
+          terraform plan \
+            -var-file="terraform.tfvars" \
+            -out=tfplan.binary \
+            -no-color
+          
+          terraform show -json tfplan.binary > tfplan.json
+
+      - name: Run OPA policy evaluation
+        id: opa
+        run: |
+          mkdir -p reports
+          
+          # Evaluate all enterprise policies
+          opa eval \
+            --input environments/dev/tfplan.json \
+            --data policies/opa/tagging.rego \
+            --data policies/opa/encryption.rego \
+            --data policies/opa/networking.rego \
+            --format pretty \
+            "data.enterprise.terraform.deny" \
+            | tee reports/opa-deny-results.txt
+          
+          # Check if any deny rules fired
+          DENY_COUNT=$(opa eval \
+            --input environments/dev/tfplan.json \
+            --data policies/opa/tagging.rego \
+            --data policies/opa/encryption.rego \
+            --data policies/opa/networking.rego \
+            --format raw \
+            "count(data.enterprise.terraform.deny)")
+          
+          echo "opa_deny_count=$DENY_COUNT" >> $GITHUB_OUTPUT
+          
+          if [ "$DENY_COUNT" -gt "0" ]; then
+            echo "❌ OPA policy check FAILED: $DENY_COUNT violation(s) found"
+            exit 1
+          else
+            echo "✅ OPA policy check PASSED: No violations"
+          fi
+
+      - name: Post OPA results to PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = fs.readFileSync('reports/opa-deny-results.txt', 'utf8');
+            const denyCount = '${{ steps.opa.outputs.opa_deny_count }}';
+            const status = denyCount === '0' ? '✅ PASSED' : '❌ FAILED';
+            
+            const body = `### OPA Enterprise Policy Check — ${status}
+            **Violations found:** ${denyCount}
+            
+            ${denyCount !== '0' ? '```\n' + results + '\n```' : 'All enterprise policies satisfied.'}
+            
+            Policies evaluated:
+            - \`tagging.rego\` — Mandatory tag enforcement
+            - \`encryption.rego\` — Encryption at rest/transit
+            - \`networking.rego\` — Network isolation guardrails
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # ─── Stage 4: Terraform Plan (PR Comment) ─────────────────────────────────
+  terraform-plan:
+    name: "Terraform Plan"
+    runs-on: ubuntu-latest
+    needs: opa-policy-check
+    if: github.event_name == 'pull_request'
+    strategy:
+      matrix:
+        environment: [dev, staging]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: environments/${{ matrix.environment }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ matrix.environment }}/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+          
+          terraform plan \
+            -var-file="terraform.tfvars" \
+            -no-color \
+            -detailed-exitcode \
+            2>&1 | head -200  # Truncate for PR comment
+        continue-on-error: true
+
+      - name: Post plan to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `### Terraform Plan — \`${{ matrix.environment }}\`
+            \`\`\`hcl
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+            
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
