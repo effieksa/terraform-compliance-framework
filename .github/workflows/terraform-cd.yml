@@ -1,10 +1,6 @@
 name: Terraform CD — Deploy
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "environments/**"
   workflow_dispatch:
     inputs:
       environment:
